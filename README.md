@@ -46,6 +46,13 @@ TRAFFIC_SEMANTIC_GRAPHS/
 ```
 **Note:** The actual data files are not included in the repository due to storage limitations.
 
+## Python Environment Set-up
+*Tested on python 3.12*
+1. Run `pip install -r requirements.txt`
+2. Run `pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126` >> for alternatives check out this link: [PyTorch Start Locally](https://pytorch.org/get-started/locally/)
+3. Run `python -c "import torch; print('CUDA is available.' if torch.cuda.is_available() else 'CUDA is not available.')"` >> see if cuda is available on your device
+4. Run `pip install torch-geometric`
+
 ## Phase 1: Data Processing
 
 This phase involves processing the raw data from the L2D and NuPlan datasets into a format suitable for risk analysis.
