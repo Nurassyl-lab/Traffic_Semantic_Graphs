@@ -20,3 +20,4 @@ rfdetr
 Shapely
 tqdm
 wandb
+prettytable
