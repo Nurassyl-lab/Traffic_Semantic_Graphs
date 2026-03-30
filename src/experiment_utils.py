@@ -20,6 +20,7 @@ import numpy as np
 import torch
 from tqdm import tqdm
 from scipy.stats import spearmanr
+import matplotlib.pyplot as plt
 from sklearn.metrics import (
     f1_score,
     balanced_accuracy_score,
@@ -718,3 +719,18 @@ def log_annotations(file_path: str, script_name: str, anchor_pct: int, noise_pct
     print(f"Logged metrics for {script_name} (anchor_pct={anchor_pct}, noise_pct={noise_pct}, seed={seed}) to {file_path}")
 
 
+def plot_performance_curves(title="Title", train_loss=None, val_loss=None, save_path=None):
+    assert train_loss is not None and val_loss is not None, "train_loss and val_loss must be provided"
+    plt.figure(figsize=(10, 6))
+    plt.plot(train_loss, label="Train Set")
+    plt.plot(val_loss, label="Validation Set")
+    plt.title(title)
+    plt.xlabel("Epoch")
+    plt.ylabel("Loss")
+    plt.legend()
+    plt.grid(True)
+    if save_path:
+        plt.savefig(save_path)
+        print(f"Saved performance curve to {save_path}")
+    else:
+        plt.show()

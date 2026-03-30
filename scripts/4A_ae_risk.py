@@ -10,6 +10,7 @@ from torch.utils.data import random_split
 from torch_geometric.loader import DataLoader
 from scipy.stats import spearmanr
 import wandb
+import matplotlib.pyplot as plt
 from sklearn.metrics import (mean_absolute_error,cohen_kappa_score,mean_squared_error,r2_score,confusion_matrix,)
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.graph_encoding.data_loaders import get_graph_dataset
@@ -18,7 +19,7 @@ from src.graph_encoding.autoencoder import (HeteroGraphAutoencoder,batched_graph
 from src.graph_encoding.risk_prediction import RiskPredictionHead
 from src.experiment_utils import (set_seed,seed_worker,risk_to_class_safe,infer_graph_emb_dim,apply_yaml_overrides,
                                   resolve_paths,_format_confusion_matrix,_print_access,_require_dir,_require_file,
-                                  _make_fallback_run_id,_ensure_dir,classification_metrics_from_cm,log_annotations,)
+                                  _make_fallback_run_id,_ensure_dir,classification_metrics_from_cm,log_annotations,plot_performance_curves)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
@@ -205,6 +206,7 @@ def run_task(args: argparse.Namespace):
         hidden_dim=args.risk_hidden_dim,
         output_dim=output_dim,
         mode=args.prediction_mode,
+        dropout_rate=args.risk_dropout,
     ).to(device)
 
     risk_loss_fn = nn.MSELoss() if args.prediction_mode == "regression" else nn.CrossEntropyLoss()
@@ -227,10 +229,18 @@ def run_task(args: argparse.Namespace):
             weight_decay=args.ae_weight_decay,
         )
 
+        train_recons = []
+        val_recons = []
+        train_feature_losses = []
+        train_edge_losses = []
+        val_feature_losses = []
+        val_edge_losses = []
         for epoch in range(1, args.ae_epochs + 1):
             encoder.train()
             total = 0.0
             n_batches = 0
+            train_feature_loss = 0.0
+            train_edge_loss = 0.0
 
             for batch in tqdm(train_loader, desc=f"AE Epoch {epoch:02d} [train]"):
                 ae_opt.zero_grad()
@@ -238,16 +248,20 @@ def run_task(args: argparse.Namespace):
 
                 # Reconstruction loss = feature + edge
                 l_feat = feature_loss(feat_logits, batch)
-                l_edge = edge_loss(edge_logits, z_dict, encoder.edge_decoders)
+                l_edge = edge_loss(edge_logits, z_dict, encoder.edge_decoders, num_neg=args.ae_train_num_neg)
                 loss = l_feat + l_edge
 
                 loss.backward()
                 ae_opt.step()
 
                 total += float(loss.item())
+                train_feature_loss += float(l_feat.item())
+                train_edge_loss += float(l_edge.item())
                 n_batches += 1
 
             train_loss = total / max(n_batches, 1)
+            train_feat = train_feature_loss / max(n_batches, 1)
+            train_edge = train_edge_loss / max(n_batches, 1)
 
             # val
             encoder.eval()
@@ -260,7 +274,7 @@ def run_task(args: argparse.Namespace):
                 for batch in tqdm(val_loader, desc=f"AE Epoch {epoch:02d} [val]"):
                     batch, z_dict, feat_logits, edge_logits, _g = encode_graph_embeddings(batch)
                     l_feat = feature_loss(feat_logits, batch)
-                    l_edge = edge_loss(edge_logits, z_dict, encoder.edge_decoders)
+                    l_edge = edge_loss(edge_logits, z_dict, encoder.edge_decoders, num_neg=args.ae_val_num_neg)
                     loss = l_feat + l_edge
 
                     vtotal += float(loss.item())
@@ -276,6 +290,13 @@ def run_task(args: argparse.Namespace):
                 f"AE Epoch {epoch:02d} | train_recon={train_loss:.4f} | "
                 f"val_recon={val_loss:.4f} | val_feat={val_feat:.4f} | val_edge={val_edge:.4f}"
             )
+
+            train_recons.append(train_loss)
+            val_recons.append(val_loss)
+            train_feature_losses.append(train_feat)
+            train_edge_losses.append(train_edge)
+            val_feature_losses.append(val_feat)
+            val_edge_losses.append(val_edge)
 
             if wandb_run is not None:
                 wandb.log(
@@ -305,6 +326,23 @@ def run_task(args: argparse.Namespace):
                     ae_ckpt_path,
                 )
                 print(f"  -> New best AE saved to {ae_ckpt_path}")
+        _ensure_dir(os.path.dirname(ae_ckpt_path))
+
+        plot_performance_curves(
+            title="AE: Total Reconstruction Loss", 
+            train_loss=train_recons, val_loss=val_recons, 
+            save_path=ae_ckpt_path[0:-3]+"_ae_total_loss.png"
+            )
+        plot_performance_curves(
+            title="AE: Feature Reconstruction Loss",
+            train_loss=train_feature_losses, val_loss=val_feature_losses,
+            save_path=ae_ckpt_path[0:-3]+"_ae_feature_loss.png"
+            )
+        plot_performance_curves(
+            title="AE: Edge Reconstruction Loss",
+            train_loss=train_edge_losses, val_loss=val_edge_losses,
+            save_path=ae_ckpt_path[0:-3]+"_ae_edge_loss.png"
+            )
 
     # Optionally load best AE ckpt before risk training/eval
     if args.load_best_ae:
@@ -331,6 +369,10 @@ def run_task(args: argparse.Namespace):
             weight_decay=args.risk_weight_decay,
         )
 
+        train_risk_loss = []
+        val_risk_loss = []
+        train_risk_acc = []
+        val_risk_acc = []
         for epoch in range(1, args.risk_epochs + 1):
             prediction_head.train()
             total = 0.0
@@ -388,8 +430,12 @@ def run_task(args: argparse.Namespace):
                     f"Risk Epoch {epoch:02d} | train_loss={train_loss:.4f} | val_loss={val_loss:.4f} "
                     f"| train_acc={train_acc:.4f} | val_acc={val_acc:.4f}"
                 )
+                train_risk_acc.append(train_acc)
+                val_risk_acc.append(val_acc)
             else:
                 print(f"Risk Epoch {epoch:02d} | train_loss={train_loss:.4f} | val_loss={val_loss:.4f}")
+            train_risk_loss.append(train_loss)
+            val_risk_loss.append(val_loss)
 
             if wandb_run is not None:
                 payload = {"risk/epoch": epoch, "risk/train_loss": train_loss, "risk/val_loss": val_loss}
@@ -415,6 +461,21 @@ def run_task(args: argparse.Namespace):
                     best_model_path,
                 )
                 print(f"  -> New best 4Ba model saved to {best_model_path}")
+        _ensure_dir(os.path.dirname(ae_ckpt_path))
+
+        plot_performance_curves(
+            title="RM: Total Loss",
+            train_loss=train_risk_loss,
+            val_loss=val_risk_loss,
+            save_path=ae_ckpt_path[0:-3]+"_rm_total_loss.png"
+        )
+        if args.prediction_mode == "classification":
+            plot_performance_curves(
+                title="RM: Classification Accuracy",
+                train_loss=train_risk_acc,
+                val_loss=val_risk_acc,
+                save_path=ae_ckpt_path[0:-3]+"_rm_classification_acc.png"
+            )
 
     # ---------------- EVALUATE ----------------
     if args.evaluate:
@@ -593,6 +654,8 @@ if __name__ == "__main__":
     parser.add_argument("--ae_epochs", type=int, default=10)
     parser.add_argument("--ae_lr", type=float, default=1e-4)
     parser.add_argument("--ae_weight_decay", type=float, default=1e-5)
+    parser.add_argument("--ae_train_num_neg", type=int, default=1, help="Negative samples per positive edge during AE training.")
+    parser.add_argument("--ae_val_num_neg", type=int, default=4, help="Negative samples per positive edge during AE validation (higher reduces variance).")
     parser.add_argument("--load_best_ae", action="store_true", help="Load *_ae_best_model.pt before training risk/eval")
 
     # Stage 2: risk training
@@ -600,6 +663,7 @@ if __name__ == "__main__":
     parser.add_argument("--risk_epochs", type=int, default=10)
     parser.add_argument("--risk_lr", type=float, default=1e-4)
     parser.add_argument("--risk_weight_decay", type=float, default=1e-5)
+    parser.add_argument("--risk_dropout", type=float, default=0.5, help="Dropout rate for the risk prediction head.")
 
     # Eval
     parser.add_argument("--evaluate", action="store_true")
@@ -618,4 +682,5 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
     args = apply_yaml_overrides(parser, args)
+    print(f"Devices available: {torch.cuda.device_count()} | Using device: {device}")
     run_task(args)
