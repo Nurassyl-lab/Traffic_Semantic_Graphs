@@ -129,7 +129,8 @@ class QuantileFeatureQuantizer:
             xs = []
             for f in range(x.size(1)):
                 # indices in [0..B-1]
-                xi = torch.bucketize(x[:, f], boundaries=edges[f], right=False)
+                # xi = torch.bucketize(x[:, f], boundaries=edges[f], right=False)
+                xi = torch.bucketize(x[:, f].contiguous(), boundaries=edges[f], right=False)
                 xs.append(xi.view(-1, 1))
             hetero[nt][self.key] = torch.cat(xs, dim=1).long()
         return hetero
@@ -417,6 +418,8 @@ def edge_loss(edge_logits, z_dict, edge_decoders, num_neg=1):
         any_device = next(iter(z_dict.values())).device if z_dict else "cpu"
         return torch.tensor(0.0, device=any_device)
 
+    num_neg = max(1, int(num_neg))
+
     loss = 0.0
     count = 0
     for key, pos_score in edge_logits.items():
@@ -428,14 +431,15 @@ def edge_loss(edge_logits, z_dict, edge_decoders, num_neg=1):
 
         pos_label = torch.ones_like(pos_score)
 
-        # Negative samples: same count as positives
+        # Negative samples: configurable ratio to positives.
         num_src = z_dict[srctype].size(0)
         num_dst = z_dict[dsttype].size(0)
         if num_src == 0 or num_dst == 0:
             continue
 
-        neg_src = torch.randint(0, num_src, (pos_score.size(0),), device=pos_score.device)
-        neg_dst = torch.randint(0, num_dst, (pos_score.size(0),), device=pos_score.device)
+        n_neg = pos_score.size(0) * num_neg
+        neg_src = torch.randint(0, num_src, (n_neg,), device=pos_score.device)
+        neg_dst = torch.randint(0, num_dst, (n_neg,), device=pos_score.device)
         neg_score = edge_decoders[str(key)](z_dict[srctype][neg_src], z_dict[dsttype][neg_dst]).squeeze(-1)
         neg_label = torch.zeros_like(neg_score)
 
