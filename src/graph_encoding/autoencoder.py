@@ -420,9 +420,16 @@ def edge_loss(edge_logits, z_dict, edge_decoders, num_neg=1):
 
     num_neg = max(1, int(num_neg))
 
-    loss = 0.0
-    count = 0
+    # loss = 0.0
+    loss_per_key, count_per_key = {}, {}
+    loss_per_key["total"] = 0.0
+    count_per_key["total"] = 0
     for key, pos_score in edge_logits.items():
+        if key not in loss_per_key.keys():
+            loss_per_key[key] = 0.0
+        if key not in count_per_key.keys():
+            count_per_key[key] = 0
+
         srctype, rel, dsttype = key
         if srctype not in z_dict or dsttype not in z_dict:
             continue
@@ -445,13 +452,23 @@ def edge_loss(edge_logits, z_dict, edge_decoders, num_neg=1):
 
         all_scores = torch.cat([pos_score, neg_score], dim=0)
         all_labels = torch.cat([pos_label, neg_label], dim=0)
-        loss += F.binary_cross_entropy_with_logits(all_scores, all_labels)
-        count += 1
 
-    if count == 0:
+        # Calc loss
+        loss_per_key[key] += F.binary_cross_entropy_with_logits(all_scores, all_labels).item()
+        count_per_key[key] += 1
+
+        # total loss
+        loss_per_key["total"] += F.binary_cross_entropy_with_logits(all_scores, all_labels)
+        count_per_key["total"] += 1
+
+    if count_per_key["total"] == 0:
         any_device = next(iter(z_dict.values())).device if z_dict else "cpu"
         return torch.tensor(0.0, device=any_device)
-    return loss / count
+
+    for key in loss_per_key.keys():
+        if count_per_key[key] > 0:
+            loss_per_key[key] /= count_per_key[key]
+    return loss_per_key
 '''
 def kl_divergence_between_gaussians(z1, z2, eps=1e-6):
     mu1, mu2 = z1.mean(0), z2.mean(0)
@@ -465,6 +482,12 @@ def kl_divergence_between_gaussians(z1, z2, eps=1e-6):
     )
     return kl
 '''
+def calculate_loss_per_key(recorded_loss, calculated_loss):
+    # calculate loss except total
+    for key, value in calculated_loss.items():
+        if key != "total":
+            recorded_loss[key] += float(value)
+
 def kl_divergence_between_gaussians(z1, z2, eps=1e-6):
     # z1,z2: [B,D]
     mu1, mu2 = z1.mean(dim=0), z2.mean(dim=0)
