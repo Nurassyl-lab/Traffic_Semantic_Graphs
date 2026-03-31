@@ -22,32 +22,13 @@ import matplotlib.pyplot as plt
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.graph_encoding.data_loaders import get_graph_dataset
-from src.graph_encoding.autoencoder import (
-    HeteroGraphAutoencoder,
-    batched_graph_embeddings,
-    QuantileFeatureQuantizer,
-    feature_loss,
-    edge_loss,
-)
+from src.graph_encoding.autoencoder import (HeteroGraphAutoencoder,batched_graph_embeddings,QuantileFeatureQuantizer,
+                                            feature_loss,edge_loss,calculate_loss_per_key,)
 from src.graph_encoding.risk_prediction import RiskPredictionHead
-from src.experiment_utils import (
-    set_seed,
-    seed_worker,
-    risk_to_class_safe,
-    infer_graph_emb_dim,
-    apply_yaml_overrides,
-    resolve_paths,
-    _format_confusion_matrix,
-    _print_access,
-    _require_dir,
-    _require_file,
-    _make_fallback_run_id,
-    _ensure_dir,
-    classification_metrics_from_cm,
-    log_annotations,
-    plot_performance_curves,
-)
-
+from src.experiment_utils import (set_seed,seed_worker,risk_to_class_safe,infer_graph_emb_dim,apply_yaml_overrides,
+                                  resolve_paths,_format_confusion_matrix,_print_access,_require_dir,_require_file,
+                                  _make_fallback_run_id,_ensure_dir,classification_metrics_from_cm,log_annotations,
+                                  plot_performance_curves,plot_detailed_performance_curves,)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
@@ -290,11 +271,16 @@ def run_task(args: argparse.Namespace):
         )
 
         train_recons = []
-        val_recons = []
         train_feature_losses = []
         train_edge_losses = []
+
+        val_recons = []
         val_feature_losses = []
         val_edge_losses = []
+
+        # losses per edge type
+        train_losses_per_key = {("ego", "to", "ego"): [], ("ego", "to", "pedestrian"): [], ("ego", "to", "vehicle"): [], ("ego", "to", "environment"): []}
+        val_losses_per_key = {("ego", "to", "ego"): [], ("ego", "to", "pedestrian"): [], ("ego", "to", "vehicle"): [], ("ego", "to", "environment"): []}
         for epoch in range(1, args.ae_epochs + 1):
             encoder.train()
             total = 0.0
@@ -302,13 +288,16 @@ def run_task(args: argparse.Namespace):
             train_feature_loss = 0.0
             train_edge_loss = 0.0
 
+            # loss per edge type
+            train_loss_per_key = {("ego", "to", "ego"): 0.0, ("ego", "to", "pedestrian"): 0.0, ("ego", "to", "vehicle"): 0.0, ("ego", "to", "environment"): 0.0}
             for batch in tqdm(train_loader, desc=f"AE Epoch {epoch:02d} [train]"):
                 ae_opt.zero_grad()
                 batch, z_dict, feat_logits, edge_logits, _g = encode_graph_embeddings(batch)
 
                 # Reconstruction loss = feature + edge
                 l_feat = feature_loss(feat_logits, batch)
-                l_edge = edge_loss(edge_logits, z_dict, encoder.edge_decoders, num_neg=args.ae_train_num_neg)
+                l_edge_all = edge_loss(edge_logits, z_dict, encoder.edge_decoders, num_neg=args.ae_train_num_neg)
+                l_edge = l_edge_all["total"]
                 loss = l_feat + l_edge
 
                 loss.backward()
@@ -317,11 +306,14 @@ def run_task(args: argparse.Namespace):
                 total += float(loss.item())
                 train_feature_loss += float(l_feat.item())
                 train_edge_loss += float(l_edge.item())
+                calculate_loss_per_key(train_loss_per_key, l_edge_all)
                 n_batches += 1
 
             train_loss = total / max(n_batches, 1)
             train_feat = train_feature_loss / max(n_batches, 1)
             train_edge = train_edge_loss / max(n_batches, 1)
+            train_loss_per_key = {k: v / max(n_batches, 1) for k, v in train_loss_per_key.items()}
+
 
             # val
             encoder.eval()
@@ -330,21 +322,26 @@ def run_task(args: argparse.Namespace):
             vedge = 0.0
             vn = 0
 
+            # loss per edge type
+            val_loss_per_key = {("ego", "to", "ego"): 0.0, ("ego", "to", "pedestrian"): 0.0, ("ego", "to", "vehicle"): 0.0, ("ego", "to", "environment"): 0.0}
             with torch.no_grad():
                 for batch in tqdm(val_loader, desc=f"AE Epoch {epoch:02d} [val]"):
                     batch, z_dict, feat_logits, edge_logits, _g = encode_graph_embeddings(batch)
                     l_feat = feature_loss(feat_logits, batch)
-                    l_edge = edge_loss(edge_logits, z_dict, encoder.edge_decoders, num_neg=args.ae_val_num_neg)
+                    l_edge_all = edge_loss(edge_logits, z_dict, encoder.edge_decoders, num_neg=args.ae_val_num_neg)
+                    l_edge = l_edge_all["total"]
                     loss = l_feat + l_edge
 
                     vtotal += float(loss.item())
                     vfeat += float(l_feat.item())
                     vedge += float(l_edge.item())
+                    calculate_loss_per_key(val_loss_per_key, l_edge_all)
                     vn += 1
 
             val_loss = vtotal / max(vn, 1)
             val_feat = vfeat / max(vn, 1)
             val_edge = vedge / max(vn, 1)
+            val_loss_per_key = {k: v / max(vn, 1) for k, v in val_loss_per_key.items()}
 
             print(
                 f"AE Epoch {epoch:02d} | train_recon={train_loss:.4f} | "
@@ -352,11 +349,16 @@ def run_task(args: argparse.Namespace):
             )
 
             train_recons.append(train_loss)
-            val_recons.append(val_loss)
             train_feature_losses.append(train_feat)
             train_edge_losses.append(train_edge)
+            for key, value in train_loss_per_key.items():
+                train_losses_per_key[key].append(value)
+
+            val_recons.append(val_loss)
             val_feature_losses.append(val_feat)
             val_edge_losses.append(val_edge)
+            for key, value in val_loss_per_key.items():
+                val_losses_per_key[key].append(value)
 
             if wandb_run is not None:
                 wandb.log(
@@ -392,17 +394,23 @@ def run_task(args: argparse.Namespace):
             title="AE: Total Reconstruction Loss", 
             train_loss=train_recons, val_loss=val_recons, 
             save_path=ae_ckpt_path[0:-3]+"_ae_total_loss.png"
-            )
+        )
         plot_performance_curves(
             title="AE: Feature Reconstruction Loss",
             train_loss=train_feature_losses, val_loss=val_feature_losses,
             save_path=ae_ckpt_path[0:-3]+"_ae_feature_loss.png"
-            )
+        )
         plot_performance_curves(
             title="AE: Edge Reconstruction Loss",
             train_loss=train_edge_losses, val_loss=val_edge_losses,
             save_path=ae_ckpt_path[0:-3]+"_ae_edge_loss.png"
-            )
+        )
+        plot_detailed_performance_curves(
+            title="AE: Edge Reconstruction Loss per Edge Type",
+            train_metrics=train_losses_per_key,
+            val_metrics=val_losses_per_key,
+            save_path=ae_ckpt_path[0:-3]+"_ae_edge_loss_per_type.png"
+        )
 
     # Optionally load best AE ckpt before risk training/eval
     if args.load_best_ae:

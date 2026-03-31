@@ -605,7 +605,8 @@ def run_task(args: argparse.Namespace):
                     opt.zero_grad()
                     batch, z, feat_logits, edge_logits, _g = encode_fn(batch)
                     l_feat = feature_loss(feat_logits, batch)
-                    l_edge = edge_loss(edge_logits, z, encoder.edge_decoders)
+                    l_edge_all = edge_loss(edge_logits, z, encoder.edge_decoders)
+                    l_edge = l_edge_all["total"]
                     loss = l_feat + l_edge
                     loss.backward()
                     opt.step()
@@ -620,7 +621,8 @@ def run_task(args: argparse.Namespace):
                     for batch in tqdm(val_loader, desc=f"AE[{label}] Epoch {epoch:02d} [val]"):
                         batch, z, feat_logits, edge_logits, _g = encode_fn(batch)
                         l_feat = feature_loss(feat_logits, batch)
-                        l_edge = edge_loss(edge_logits, z, encoder.edge_decoders)
+                        l_edge_all = edge_loss(edge_logits, z, encoder.edge_decoders)
+                        l_edge = l_edge_all["total"]
                         loss = l_feat + l_edge
                         vtotal += float(loss.item())
                         vn += 1
