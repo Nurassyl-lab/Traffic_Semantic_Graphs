@@ -999,6 +999,7 @@ def run_task(args: argparse.Namespace):
                 print(f"  -> New best FIXED model saved to {main_ckpt_path}")
 
     # ---------------- EVALUATE ----------------
+    metrics=None
     if args.evaluate:
         print(f"Evaluating FIXED paired-anchor model: clean={ds_clean_name}, noisy={ds_noisy_name}...")
 
