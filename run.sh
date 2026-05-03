@@ -1,16 +1,27 @@
 #!/bin/bash
 EMB_DIM=64
-SEED=1234 # 3 seeds I used: 42, 3407, 1234
-AE_EPOCHS=60
-RISK_EPOCHS=20
-UST_EPOCHS=20
+SEED=228 # 3 seeds I used: 42, 3407, 1234
+AE_EPOCHS=200
+RISK_EPOCHS=80
+UST_EPOCHS=80
 ANCHOR=5
-noises=(1 2 3 4 5 10)
+noises=(35)
 
 # Train clean model 
 # AE: 200 epochs
 echo "Running Clean Training"
-python -m scripts.4A_ae_risk   --nup --clean --train_autoencoder --train_risk  --seed "$SEED" --embed_dim "$EMB_DIM"   --best_model_path ./models/BaselineB/clean/clean_seed"$SEED"_best_model.pt   --ae_epochs 200 --risk_epochs "$RISK_EPOCHS" --batch_size 16 --num_workers 0
+# python -m scripts.4A_ae_risk \
+# --nup \
+# --clean \
+# --train_autoencoder \
+# --train_risk \
+# --seed "$SEED" \
+# --embed_dim "$EMB_DIM" \
+# --best_model_path ./models/BaselineB/clean/clean_seed"$SEED"_best_model.pt \
+# --ae_epochs 200 \
+# --risk_epochs "$RISK_EPOCHS" \
+# --batch_size 16 \
+# --num_workers 0
 
 # Run Noisy Training and UST Training per noise level
 for n in "${noises[@]}"; do
