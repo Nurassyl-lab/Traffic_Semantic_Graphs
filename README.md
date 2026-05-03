@@ -299,3 +299,12 @@ python -m scripts.visualizer --histogram ego-vx
 | 5            | 39.15%     | 33.59%     | **41.46%** |
 | 10           | 39.15%     | 38.45%     | **40.32%** |
 | 50           | 44.97%     | 28.95%     | **45.43%** |
+___
+### Learning Curves Examples
+![Figure 1](models/BaselineB/clean/clean_seed1234_ae_best_model_ae_total_loss.png)
+**Figure 1: Displays training progress of the BaselineB autoencoder trained on clean dataset. Total Reconstruction Loss = Feature Loss + Edge Loss.**
+
+![Figure 2](models/BaselineB/clean/clean_seed1234_ae_best_model_ae_edge_loss_per_type.png)
+**Figure 2: Displays training progress of the BaselineB autoencoder trained on clean dataset. Reconstruction losses are displayed per edge type; 4 edge types**
+
+![Figure 3]()
