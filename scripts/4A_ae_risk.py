@@ -997,6 +997,12 @@ if __name__ == "__main__":
     parser.add_argument("--ae_train_num_neg", type=int, default=1, help="Negative samples per positive edge during AE training.")
     parser.add_argument("--ae_val_num_neg", type=int, default=4, help="Negative samples per positive edge during AE validation (higher reduces variance).")
     parser.add_argument("--load_best_ae", action="store_true", help="Load *_ae_best_model.pt before training risk/eval")
+    parser.add_argument(
+        "--init_ae_checkpoint",
+        type=str,
+        default=None,
+        help="Optional checkpoint to initialize the autoencoder before Stage 1 training.",
+    )
 
     # Joint training
     parser.add_argument("--train_joint", action="store_true", help="Train encoder and risk head jointly with a combined reconstruction and prediction loss.")
