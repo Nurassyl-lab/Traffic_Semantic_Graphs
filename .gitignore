@@ -95,3 +95,6 @@ local_scripts/
 
 
 Resultsandweights/ust/clean__vs__noisy_5/
+
+results.txt
+test_real_coordinate.py
