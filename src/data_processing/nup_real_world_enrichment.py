@@ -121,8 +121,6 @@ def summarize_graph_context(filename, source_graph, context):
     result['scene_token'] = source.get('scene_token') or metadata.get('scene_token')
     result['anchor_source'] = 'first_lidar_pc_in_scene'
     result['anchor_timestamp_us'] = source.get('timestamp_us')
-        'delta_us': delta_us,
-        'delta_ms': (float(delta_us) / 1000.0) if delta_us is not None else None,
     result['ego_pose_timestamp_us'] = source.get('ego_pose_timestamp_us')
     result['latitude'] = pose.get('latitude')
     result['longitude'] = pose.get('longitude')
@@ -288,6 +286,8 @@ def read_nearest_camera(conn: sqlite3.Connection, timestamp_us: int, channel: st
         'channel': row[1],
         'timestamp_us': int(row[0]),
         'anchor_timestamp_us': int(timestamp_us),
+        'delta_us': delta_us,
+        'delta_ms': (float(delta_us) / 1000.0) if delta_us is not None else None,
         'filename_jpg': row[2],
         'image_path': _repo_relative(path, resources.repo_root),
         'exists': bool(exists),
