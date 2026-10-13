@@ -305,3 +305,11 @@ ___
 **Figure 2: Displays training progress of the BaselineB autoencoder trained on clean dataset. Reconstruction losses are displayed per edge type; 4 edge types**
 
 ![Figure 3]()
+
+
+
+### How to run nuplan enrichment
+```python
+python scripts/create_real_world_dataset.py   --input-root data/NuPlan/training_data/clean   --output-root data/NuPlan/training_data_real_world_sample/clean   --db-root nuplan_actual/data/cache/mini   --camera-root nuplan_actual/nuplan-v1.1_mini_camera   --map-root nuplan_actual/nuplan-maps-v1.0   --limit 10   --overwrite
+```
+*Note that --limit is only for testing, remove it to process the whole dataset*
