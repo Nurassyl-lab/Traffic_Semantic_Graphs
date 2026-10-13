@@ -49,11 +49,118 @@ def sorted_graph_paths(graph_dir: Path) -> List[Path]:
     return sorted(graph_dir.glob('*.json'), key=_graph_key)
 
 
+def normalize_graph_filename(value: str) -> str:
+    name = Path(str(value)).name
+    if name.endswith('.json'):
+        return name
+    return f'{name}_graph.json'
+
+
+def select_graph_paths(graph_dir: Path, limit: Optional[int] = None, graph_files: Optional[Sequence[str]] = None) -> Tuple[List[Path], int, List[str], str]:
+    all_paths = sorted_graph_paths(graph_dir)
+    available_graphs = len(all_paths)
+    if graph_files:
+        by_name = {path.name: path for path in all_paths}
+        selected: List[Path] = []
+        missing: List[str] = []
+        seen = set()
+        for value in graph_files:
+            name = normalize_graph_filename(str(value))
+            if name in seen:
+                continue
+            seen.add(name)
+            path = by_name.get(name)
+            if path is None:
+                missing.append(name)
+            else:
+                selected.append(path)
+        if missing:
+            raise FileNotFoundError('Graph file(s) not found under %s: %s' % (graph_dir, missing))
+        return selected, available_graphs, [path.name for path in selected], 'explicit'
+    if limit is not None:
+        if limit <= 0:
+            raise ValueError('limit must be a positive integer')
+        selected = all_paths[:limit]
+        return selected, available_graphs, [path.name for path in selected], 'limit'
+    return all_paths, available_graphs, [], 'all'
+
+
+def camera_delta_stats(graph_summaries):
+    values = []
+    for item in graph_summaries:
+        value = item.get('camera_delta_ms')
+        if value is not None:
+            values.append(float(value))
+    values = sorted(values)
+    result = {}
+    if not values:
+        result['camera_delta_ms_min'] = None
+        result['camera_delta_ms_median'] = None
+        result['camera_delta_ms_max'] = None
+        return result
+    mid = len(values) // 2
+    result['camera_delta_ms_min'] = values[0]
+    result['camera_delta_ms_median'] = values[mid] if len(values) % 2 else (values[mid - 1] + values[mid]) / 2.0
+    result['camera_delta_ms_max'] = values[-1]
+    return result
+
+def summarize_graph_context(filename, source_graph, context):
+    metadata = source_graph.get('metadata', {})
+    source = context.get('source') or {}
+    pose = context.get('pose') or {}
+    time_info = context.get('time') or {}
+    camera = context.get('camera') or {}
+    road = context.get('road') or {}
+    weather = context.get('weather')
+    road_ok = bool(road) and not road.get('composition_unavailable') and road.get('status') != 'unavailable'
+    weather_status = weather.get('status') if isinstance(weather, dict) else 'missing'
+    result = {}
+    result['graph'] = filename
+    result['db'] = source.get('db_file') or metadata.get('db_file')
+    result['scene'] = source.get('scene_name') or metadata.get('scene_name')
+    result['scene_token'] = source.get('scene_token') or metadata.get('scene_token')
+    result['anchor_source'] = 'first_lidar_pc_in_scene'
+    result['anchor_timestamp_us'] = source.get('timestamp_us')
+        'delta_us': delta_us,
+        'delta_ms': (float(delta_us) / 1000.0) if delta_us is not None else None,
+    result['ego_pose_timestamp_us'] = source.get('ego_pose_timestamp_us')
+    result['latitude'] = pose.get('latitude')
+    result['longitude'] = pose.get('longitude')
+    result['epsg'] = pose.get('epsg')
+    result['datetime_local'] = time_info.get('datetime_local')
+    result['camera'] = camera.get('channel')
+    result['camera_timestamp_us'] = camera.get('timestamp_us')
+    result['camera_delta_ms'] = camera.get('delta_ms')
+    result['camera_exists'] = camera.get('exists')
+    result['image_path'] = camera.get('image_path')
+    result['road'] = 'OK' if road_ok else road.get('status') or road.get('composition_unavailable') or 'missing'
+    result['weather'] = 'OK' if weather_status == 'ok' else weather_status
+    result['errors'] = context.get('errors', [])
+    return result
+
+def format_graph_summary(summary):
+    lat = summary.get('latitude')
+    lon = summary.get('longitude')
+    latlon = 'None' if lat is None or lon is None else '%.8f, %.8f' % (lat, lon)
+    rows = [
+        str(summary.get('graph')),
+        '  db: %s' % summary.get('db'),
+        '  scene: %s token=%s' % (summary.get('scene'), summary.get('scene_token')),
+        '  anchor_timestamp_us: %s' % summary.get('anchor_timestamp_us'),
+        '  lat/lon: %s' % latlon,
+        '  datetime_local: %s' % summary.get('datetime_local'),
+        '  camera: %s exists=%s' % (summary.get('camera'), summary.get('camera_exists')),
+        '  camera_delta_ms: %s' % summary.get('camera_delta_ms'),
+        '  road: %s' % summary.get('road'),
+        '  weather: %s' % summary.get('weather'),
+    ]
+    return chr(10).join(rows)
+
 def validate_preserved_graph(source_graph: Dict[str, Any], output_graph: Dict[str, Any]) -> None:
     stripped = copy.deepcopy(output_graph)
     stripped.pop('real_world_context', None)
     if stripped != source_graph:
-        raise ValueError('Output graph changed after removing real_world_context')
+        raise AssertionError('Output graph changed after removing real_world_context')
 
 
 class NuPlanRealWorldResources:
@@ -176,13 +283,14 @@ def read_nearest_camera(conn: sqlite3.Connection, timestamp_us: int, channel: st
     if row is None:
         return None
     path, exists = resources.resolve_image_path(row[2])
+    delta_us = int(row[3]) if row[3] is not None else None
     return {
         'channel': row[1],
         'timestamp_us': int(row[0]),
+        'anchor_timestamp_us': int(timestamp_us),
         'filename_jpg': row[2],
         'image_path': _repo_relative(path, resources.repo_root),
         'exists': bool(exists),
-        'time_delta_us': int(row[3]) if row[3] is not None else None,
     }
 
 
@@ -290,7 +398,6 @@ def build_real_world_context(graph: Dict[str, Any], resources: NuPlanRealWorldRe
         camera = None
         context['errors'].append(f'camera_query_failed:{type(exc).__name__}:{exc}')
     if camera is None:
-        context['camera'] = {'channel': camera_channel, 'timestamp_us': None, 'filename_jpg': None, 'image_path': None, 'exists': False, 'time_delta_us': None}
         counters['missing_camera'] += 1
     else:
         context['camera'] = camera
@@ -301,7 +408,7 @@ def build_real_world_context(graph: Dict[str, Any], resources: NuPlanRealWorldRe
     return context, counters
 
 
-def copy_subset_with_real_world_context(input_root: Path, output_root: Path, db_root: Path, camera_root: Path, map_root: Path, camera_channel: str = 'CAM_F0', composition_radius_m: float = 30.0, include_weather: bool = True, limit: Optional[int] = None, overwrite: bool = False, repo_root: Optional[Path] = None) -> Dict[str, Any]:
+def copy_subset_with_real_world_context(input_root: Path, output_root: Path, db_root: Path, camera_root: Path, map_root: Path, camera_channel: str = 'CAM_F0', composition_radius_m: float = 30.0, include_weather: bool = True, limit: Optional[int] = None, graph_files: Optional[Sequence[str]] = None, overwrite: bool = False, repo_root: Optional[Path] = None) -> Dict[str, Any]:
     input_root = Path(input_root)
     output_root = Path(output_root)
     graph_dir = input_root / 'graphs'
@@ -310,6 +417,8 @@ def copy_subset_with_real_world_context(input_root: Path, output_root: Path, db_
         raise FileNotFoundError(f'Input graph directory not found: {graph_dir}')
     if output_root.exists() and any(output_root.iterdir()) and not overwrite:
         raise FileExistsError(f'Output root already exists and is not empty: {output_root}')
+    if overwrite and out_graph_dir.exists():
+        shutil.rmtree(out_graph_dir)
     out_graph_dir.mkdir(parents=True, exist_ok=True)
     for child in input_root.iterdir():
         if child.is_file():
@@ -318,9 +427,12 @@ def copy_subset_with_real_world_context(input_root: Path, output_root: Path, db_
     counters: Counter = Counter()
     failures: List[Dict[str, str]] = []
     examples: List[Dict[str, Any]] = []
-    paths = sorted_graph_paths(graph_dir)
-    if limit is not None:
-        paths = paths[:limit]
+    graph_summaries: List[Dict[str, Any]] = []
+    if limit is not None and graph_files:
+        raise ValueError('--limit cannot be combined with explicit graph selection')
+    paths, available_graphs, selected_filenames, selection_mode = select_graph_paths(graph_dir, limit, graph_files)
+    selected_graphs = len(paths)
+    sample_run = selection_mode != 'all'
     try:
         for graph_path in paths:
             counters['processed'] += 1
@@ -328,9 +440,11 @@ def copy_subset_with_real_world_context(input_root: Path, output_root: Path, db_
             try:
                 source_graph = json.loads(graph_path.read_text())
                 if 'real_world_context' in source_graph:
-                    raise ValueError('source graph already has real_world_context')
+                    raise AssertionError('source graph already has real_world_context')
                 output_graph = copy.deepcopy(source_graph)
                 context, local_counts = build_real_world_context(output_graph, resources, camera_channel=camera_channel, composition_radius_m=composition_radius_m, include_weather=include_weather)
+                summary = summarize_graph_context(graph_path.name, source_graph, context)
+                graph_summaries.append(summary)
                 counters.update(local_counts)
                 output_graph['real_world_context'] = context
                 validate_preserved_graph(source_graph, output_graph)
@@ -342,11 +456,20 @@ def copy_subset_with_real_world_context(input_root: Path, output_root: Path, db_
                 if len(examples) < 3:
                     examples.append({'input_graph': graph_path.as_posix(), 'output_graph': out_path.as_posix(), 'db_file': source_graph.get('metadata', {}).get('db_file'), 'scene_token': source_graph.get('metadata', {}).get('scene_token'), 'timestamp_us': context.get('source', {}).get('timestamp_us'), 'image_path': (context.get('camera') or {}).get('image_path'), 'errors': context.get('errors', [])})
             except Exception as exc:
+                if isinstance(exc, AssertionError):
+                    raise
                 counters['failed'] += 1
                 failures.append({'graph': graph_path.as_posix(), 'error': f'{type(exc).__name__}: {exc}'})
     finally:
         resources.close()
-    report = {'input_root': input_root.as_posix(), 'output_root': output_root.as_posix(), 'counts': dict(counters), 'examples': examples, 'failures': failures[:200], 'failure_count_total': len(failures)}
+    report = {'input_root': input_root.as_posix(), 'output_root': output_root.as_posix(), 'limit': limit, 'available_graphs': available_graphs, 'selected_graphs': selected_graphs, 'counts': dict(counters), 'examples': examples, 'failures': failures[:200], 'failure_count_total': len(failures)}
+    report['sample_run'] = sample_run
+    report['selection_mode'] = selection_mode
+    report['selected_filenames'] = selected_filenames if sample_run else []
+    report['selected_filename_count'] = len(selected_filenames)
+    report['graph_summaries'] = graph_summaries
+    report.update(camera_delta_stats(graph_summaries))
+    report.update(dict(counters))
     (output_root / 'real_world_enrichment_report.json').write_text(json.dumps(report, indent=2))
     return report
 
