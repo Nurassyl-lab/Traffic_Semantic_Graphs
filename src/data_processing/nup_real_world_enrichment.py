@@ -18,6 +18,13 @@ from test_real_coordinate import (
     yaw_from_quaternion,
 )
 
+DEFAULT_NUPLAN_DATASET_ROOT = Path('/data/nuplan_dataset')
+DEFAULT_NUPLAN_ACTUAL_ROOT = DEFAULT_NUPLAN_DATASET_ROOT / 'nuplan_actual'
+DEFAULT_NUPLAN_DATA_ROOT = DEFAULT_NUPLAN_DATASET_ROOT / 'data' / 'NuPlan'
+DEFAULT_DB_ROOT = DEFAULT_NUPLAN_ACTUAL_ROOT / 'data' / 'cache' / 'mini'
+DEFAULT_CAMERA_ROOT = DEFAULT_NUPLAN_ACTUAL_ROOT / 'nuplan-v1.1_mini_camera'
+DEFAULT_MAP_ROOT = DEFAULT_NUPLAN_ACTUAL_ROOT / 'nuplan-maps-v1.0'
+
 
 def _token_params(token: Optional[str]) -> List[Any]:
     if not token:
@@ -38,6 +45,26 @@ def _repo_relative(path: Optional[Path], repo_root: Path) -> Optional[str]:
         return path.resolve().relative_to(repo_root.resolve()).as_posix()
     except ValueError:
         return path.as_posix()
+
+
+def resolve_dataset_path(path: Path, repo_root: Optional[Path] = None) -> Path:
+    """Resolve old repo-relative NuPlan paths to the shared dataset root when needed."""
+    candidate = Path(path).expanduser()
+    if candidate.is_absolute():
+        return candidate
+
+    root = Path(repo_root or Path.cwd())
+    local_candidate = root / candidate
+    if local_candidate.exists():
+        return local_candidate
+
+    parts = candidate.parts
+    if parts[:1] == ('nuplan_actual',) or parts[:2] == ('data', 'NuPlan'):
+        shared_candidate = DEFAULT_NUPLAN_DATASET_ROOT / candidate
+        if DEFAULT_NUPLAN_DATASET_ROOT.exists() or shared_candidate.exists():
+            return shared_candidate
+
+    return candidate
 
 
 def _graph_key(path: Path) -> Tuple[int, str]:
@@ -163,10 +190,10 @@ def validate_preserved_graph(source_graph: Dict[str, Any], output_graph: Dict[st
 
 class NuPlanRealWorldResources:
     def __init__(self, db_root: Path, camera_root: Path, map_root: Path, repo_root: Optional[Path] = None):
-        self.db_root = Path(db_root)
-        self.camera_root = Path(camera_root)
-        self.map_root = Path(map_root)
         self.repo_root = Path(repo_root or Path.cwd())
+        self.db_root = resolve_dataset_path(Path(db_root), self.repo_root)
+        self.camera_root = resolve_dataset_path(Path(camera_root), self.repo_root)
+        self.map_root = resolve_dataset_path(Path(map_root), self.repo_root)
         self._db_paths: Dict[str, Optional[Path]] = {}
         self._connections: Dict[Path, sqlite3.Connection] = {}
         self._log_info: Dict[Path, Dict[str, Any]] = {}
@@ -409,8 +436,9 @@ def build_real_world_context(graph: Dict[str, Any], resources: NuPlanRealWorldRe
 
 
 def copy_subset_with_real_world_context(input_root: Path, output_root: Path, db_root: Path, camera_root: Path, map_root: Path, camera_channel: str = 'CAM_F0', composition_radius_m: float = 30.0, include_weather: bool = True, limit: Optional[int] = None, graph_files: Optional[Sequence[str]] = None, overwrite: bool = False, repo_root: Optional[Path] = None) -> Dict[str, Any]:
-    input_root = Path(input_root)
-    output_root = Path(output_root)
+    repo_root = Path(repo_root or Path.cwd())
+    input_root = resolve_dataset_path(Path(input_root), repo_root)
+    output_root = resolve_dataset_path(Path(output_root), repo_root)
     graph_dir = input_root / 'graphs'
     out_graph_dir = output_root / 'graphs'
     if not graph_dir.exists():
@@ -474,9 +502,10 @@ def copy_subset_with_real_world_context(input_root: Path, output_root: Path, db_
     return report
 
 
-def subset_jobs(input_root: Path, output_root: Path, subsets: Optional[Sequence[str]]) -> List[Tuple[Path, Path]]:
-    input_root = Path(input_root)
-    output_root = Path(output_root)
+def subset_jobs(input_root: Path, output_root: Path, subsets: Optional[Sequence[str]], repo_root: Optional[Path] = None) -> List[Tuple[Path, Path]]:
+    repo_root = Path(repo_root or Path.cwd())
+    input_root = resolve_dataset_path(Path(input_root), repo_root)
+    output_root = resolve_dataset_path(Path(output_root), repo_root)
     if (input_root / 'graphs').exists():
         return [(input_root, output_root)]
     selected = list(subsets or [])

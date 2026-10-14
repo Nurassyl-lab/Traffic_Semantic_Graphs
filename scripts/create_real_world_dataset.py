@@ -11,8 +11,12 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from src.data_processing.nup_real_world_enrichment import (
+    DEFAULT_CAMERA_ROOT,
+    DEFAULT_DB_ROOT,
+    DEFAULT_MAP_ROOT,
     copy_subset_with_real_world_context,
     format_graph_summary,
+    resolve_dataset_path,
     subset_jobs,
 )
 
@@ -32,9 +36,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--input-root', required=True, help='Subset root containing graphs/, or dataset root containing subset directories.')
     parser.add_argument('--output-root', required=True, help='Output subset root, or output dataset root when --input-root is a dataset root.')
     parser.add_argument('--subsets', nargs='*', default=None, help='Subset names to mirror when --input-root is a dataset root. Defaults to clean if available.')
-    parser.add_argument('--db-root', default='nuplan_actual/data/cache/mini', help='Directory containing raw NuPlan .db files.')
-    parser.add_argument('--camera-root', default='nuplan_actual/nuplan-v1.1_mini_camera', help='Directory containing NuPlan camera folders.')
-    parser.add_argument('--map-root', default='nuplan_actual/nuplan-maps-v1.0', help='Directory containing nuplan-maps-v1.0.json and map folders.')
+    parser.add_argument('--db-root', default=str(DEFAULT_DB_ROOT), help='Directory containing raw NuPlan .db files.')
+    parser.add_argument('--camera-root', default=str(DEFAULT_CAMERA_ROOT), help='Directory containing NuPlan camera folders.')
+    parser.add_argument('--map-root', default=str(DEFAULT_MAP_ROOT), help='Directory containing nuplan-maps-v1.0.json and map folders.')
     parser.add_argument('--camera-channel', default='CAM_F0', help='Camera channel used for nearest image matching.')
     parser.add_argument('--composition-radius', type=float, default=30.0, help='HD-map query radius in meters.')
     parser.add_argument('--limit', type=positive_int, default=None, help='Sample mode: process at most N graph JSONs per subset.')
@@ -50,9 +54,9 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    input_root = Path(args.input_root)
-    output_root = Path(args.output_root)
-    jobs = subset_jobs(input_root, output_root, args.subsets)
+    input_root = resolve_dataset_path(Path(args.input_root), REPO_ROOT)
+    output_root = resolve_dataset_path(Path(args.output_root), REPO_ROOT)
+    jobs = subset_jobs(input_root, output_root, args.subsets, repo_root=REPO_ROOT)
     explicit_graphs = []
     if args.graph_ids:
         explicit_graphs.extend(args.graph_ids)
